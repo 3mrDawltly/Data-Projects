@@ -1,0 +1,314 @@
+import re
+import numpy as np
+import pandas as pd 
+import openpyxl
+from openpyxl import load_workbook
+import pycountry
+from fuzzywuzzy import fuzz
+from datetime import datetime, timedelta
+---------------------------------------------
+def standardize_column_names(filename, index_to_new_names):
+    # Load the workbook
+    wb = openpyxl.load_workbook(filename)
+    
+    # Iterate over each worksheet
+    for ws_name in wb.sheetnames:
+        sheet = wb[ws_name]
+        
+        # Iterate over the column indices specified in index_to_new_names
+        for index, new_name in index_to_new_names.items():
+            # Assuming 1-based indexing in Excel, so index - 1 corresponds to column number
+            column_letter = openpyxl.utils.get_column_letter(index)
+            cell = sheet[column_letter + '1']  # Access the cell in the first row of the specified column
+            cell.value = new_name  # Update the cell value
+    
+    # Save the modified workbook
+    wb.save(filename)
+------------------------------------------------------
+df_countries = pd.read_excel('Countries IDs.xlsx')
+df_ports = pd.read_excel('Ports_ceties_codes_and_IDs.xlsx')
+# ---------------------------------------------------------------------------------
+# Example usage
+filename = "MyPoert AUG sheet1.xlsx"  # Update with your filename
+index_to_new_names = {
+    1: "Trip",
+    2: "Price"# Example: Column index 1 will be renamed to "Trip"
+    # Add more mappings as needed
+}
+
+standardize_column_names(filename, index_to_new_names)
+# ---------------------------------------------------------------------------------
+# df_main = []
+# # Load the workbook
+# workbook = load_workbook('MyPoert AUG sheet1.xlsx')
+# # Get the number of worksheets
+# num_sheets = len(workbook.sheetnames)
+
+# for sheet_no in range(num_sheets):
+#     df_main.append(pd.read_excel("MyPoert AUG sheet1.xlsx", sheet_name=sheet_no).iloc[:, :2].dropna().reset_index(drop=True))
+
+
+# df_master = pd.concat(df_main, axis=0)
+
+df_main = []
+sheet_names = []  # List to store sheet names
+
+# Load the workbook
+workbook = load_workbook('MyPoert AUG sheet1.xlsx')
+
+# Get the number of worksheets
+num_sheets = len(workbook.sheetnames)
+
+# Iterate over each sheet
+for sheet_no in range(num_sheets):
+    # Read data from the current sheet
+    df = pd.read_excel("MyPoert AUG sheet1.xlsx", sheet_name=sheet_no).iloc[:, :2].dropna().reset_index(drop=True)
+    
+    # Add a new column with the sheet name
+    df['sheet_name'] = workbook.sheetnames[sheet_no]
+    
+    # Append the DataFrame to the list
+    df_main.append(df)
+
+# Concatenate all DataFrames in the list
+df_master = pd.concat(df_main, axis=0, ignore_index=True)
+
+# Write the DataFrame to an Excel file
+# df_master.to_excel('output.xlsx', index=False)
+----------------------------------------------------------------------------------------
+df_master.reset_index(drop=True, inplace=True)
+pd.set_option('display.max_rows', None)
+df_countries.astype(object)
+df_ports.astype(object)
+df_countries['Country'].str.strip()
+df_ports['Code'].str.strip()
+
+df_master.info()
+-------------------------------------------------------------------------------------------
+for sheet in df_master['sheet_name'].unique():
+    match = None
+    max_similarity = 0
+    for country in df_countries['Country']:
+        similarity = fuzz.ratio(str(sheet), str(country)) / 100
+        if similarity >= 0.85 and similarity > max_similarity:
+            match = country
+            max_similarity = similarity
+
+    if match:
+        index = df_countries.index[df_countries['Country'] == match][0]
+        df_master.loc[df_master['sheet_name'] == sheet, 'sheet_name'] = df_countries.loc[index, 'ID']
+    else:
+        if sheet not in df_countries['Country'].values:
+            max_id = df_countries['ID'].max() + 1
+            new_row = pd.DataFrame({'Country': [sheet], 'ID': [max_id]})
+            df_countries = pd.concat([df_countries, new_row], ignore_index=True)
+------------------------------------------------------------------------------------------
+for i in range(len(df_master['Trip'])):
+    for j in range(len(df_countries['Country'])):
+        similarity = fuzz.ratio(str(df_master['sheet_name'][i]), str(df_countries['Country'][j])) / 100
+        if similarity >= 0.8:
+            df_master['sheet_name'][i] = df_countries['ID'][j]
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+# Extract 'port_from' and 'port_to' using regex
+df_master[['port_from', 'port_to']] = df_master['Trip'].str.extract(r'FROM\s+(.*?)\s+TO\s+(.*)', flags=re.IGNORECASE)
+# ---------------------------------------------------------------------------------------------------------------------
+
+# Extract 'port_from' and 'port_to' using regex for NaN values in 'Trip' column
+additional_extraction = df_master[df_master['port_from'].isna()]['Trip'].str.extract(r'(?i)FROM\s+(\S+)\s*TO\s+(\S+)', expand=True)
+# Replace NaN values in 'port_from' and 'port_to' with the extracted values
+df_master.loc[df_master['port_from'].isna(), ['port_from', 'port_to']] = additional_extraction.values
+# ---------------------------------------------------------------------------------------------------------------------
+
+additional_extraction1 = df_master[df_master['port_from'].isna()]['Trip'].str.extract(r'(?i)FRM\s+(\S+)\s*TO\s+(\S+)', expand=True)
+df_master.loc[df_master['port_from'].isna(), ['port_from', 'port_to']] = additional_extraction1.values
+# ---------------------------------------------------------------------------------------------------------------------
+
+# Extract trip type using regex
+df_master['trip_type'] = df_master['Price'].str.extract(r'(ONE\s*|ROUND)', flags=re.IGNORECASE)
+# Map extracted trip types to 'O' and 'R'
+df_master['trip_type'] = df_master['trip_type'].str.upper().str.replace('ONE', 'O').str.replace('ROUND', 'R')
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+def find_similar_ports_1_from(list1, list2):
+    similar_ports = {}
+    
+    for i, port1 in enumerate(list1):
+        max_similarity_score = 0
+        best_match = None
+        for port2 in list2:
+            similarity_score = fuzz.ratio(port1, port2)
+            if similarity_score > max_similarity_score:
+                max_similarity_score = similarity_score
+                best_match = port2
+        if max_similarity_score >= 80:  # You can adjust the threshold as needed
+            similar_ports[port1] = (best_match, max_similarity_score)
+            list1[i] = best_match
+    
+    
+    df_master['port_from'] = list1
+    return similar_ports
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+def find_similar_ports_1_to(list1, list2):
+    similar_ports = {}
+    
+    for i, port1 in enumerate(list1):
+        max_similarity_score = 0
+        best_match = None
+        for port2 in list2:
+            similarity_score = fuzz.ratio(port1, port2)
+            if similarity_score > max_similarity_score:
+                max_similarity_score = similarity_score
+                best_match = port2
+        if max_similarity_score >= 80:  # You can adjust the threshold as needed
+            similar_ports[port1] = (best_match, max_similarity_score)
+            list1[i] = best_match
+    
+    
+    df_master['port_to'] = list1
+    return similar_ports
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+find_similar_ports_1_to(list(df_master['port_to']),list(df_ports['Port Name']))
+find_similar_ports_1_from(list(df_master['port_from']),list(df_ports['Port Name']))
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+print(len(find_similar_ports_1_to(list(df_master['port_to']),list(df_ports['Port Name']))))
+print(len(find_similar_ports_1_from(list(df_master['port_from']),list(df_ports['Port Name']))))
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+threshold = 90  # Set the similarity threshold
+
+for i, port_to in enumerate(df_master['port_to']):
+    if isinstance(port_to, str):  # Check if the entry is a string
+        best_match = None
+        max_similarity_score = 0
+        for j, city in enumerate(df_ports['City']):
+            if isinstance(city, str):  # Check if the entry is a string
+                similarity_score = fuzz.ratio(port_to, city)
+                if similarity_score > max_similarity_score and similarity_score >= threshold:
+                    max_similarity_score = similarity_score
+                    best_match = df_ports.iloc[j]['Port Name']
+        if best_match:
+            df_master.at[i, 'port_to'] = best_match
+
+for i, port_from in enumerate(df_master['port_from']):
+    if isinstance(port_from, str):  # Check if the entry is a string
+        best_match = None
+        max_similarity_score = 0
+        for j, city in enumerate(df_ports['City']):
+            if isinstance(city, str):  # Check if the entry is a string
+                similarity_score = fuzz.ratio(port_from, city)
+                if similarity_score > max_similarity_score and similarity_score >= threshold:
+                    max_similarity_score = similarity_score
+                    best_match = df_ports.iloc[j]['Port Name']
+        if best_match:
+            df_master.at[i, 'port_from'] = best_match
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+def check_port_names_3(port_names, df_ports):
+    """
+    Function to check if the provided port names exist in the DataFrame df_ports.
+Oostende
+    Parameters:
+    - port_names: List of port names to check.
+    - df_ports: DataFrame containing the port names.
+
+    Returns:
+    - List of tuples containing (index, port name) for port names found in df_ports.
+    - List of unique port names not found in df_ports.
+    """
+    found_ports = []
+    not_found_ports = set()
+
+    for i, port in enumerate(port_names):
+        if port in df_ports['Port Name'].values:
+            found_ports.append((i, port))
+        else:
+            not_found_ports.add(port)
+
+    return found_ports, list(not_found_ports)
+
+def correct_not_found_ports(unique_not_found_ports):
+    """
+    Function to correct the unique port names not found in df_ports.
+
+    Parameters:
+    - unique_not_found_ports: List of unique port names not found in df_ports.
+
+    Returns:
+    - Dictionary containing corrected port names.
+    """
+    corrected_ports = {}
+
+    for port in unique_not_found_ports:
+        corrected_name = input(f"Enter corrected name for '{port}': ")
+        corrected_ports[port] = corrected_name
+
+    return corrected_ports
+
+# Example usage:
+found_ports, not_found_ports = check_port_names_3(df_master['port_from'], df_ports)
+
+# Print the port names found in df_ports and those not found
+print("Port names found in df_ports:")
+for index, port in found_ports:
+    print(f"Index: {index}, Port: {port}")
+
+print("\nUnique port names not found in df_ports:")
+for port in not_found_ports:
+    print(f"Port: {port}")
+
+# Correct the not found ports
+corrected_ports = correct_not_found_ports(not_found_ports)
+
+# Replace the incorrect port names with corrected values in df_master
+for port in corrected_ports:
+    df_master.loc[df_master['port_from'] == port, 'port_from'] = corrected_ports[port]
+
+# Display the corrected port names in df_master
+print("\nCorrected port names in df_master:")
+print(df_master['port_from'])
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+df_master['port_from_id'] = None
+df_master['port_to_id'] = None
+df_master['port_from_code'] = None
+df_master['port_to_code'] = None
+
+df_master['publish_date'] = datetime.today().date()
+df_master['expir_date'] = datetime.today().date() + timedelta(days=33)
+
+for i in range(len(df_master['port_to'])):
+    for j in range(len(df_ports['Port Name'])):
+        if df_master['port_to'][i] == df_ports['Port Name'][j]:
+            df_master['port_to_id'][i] = df_ports['ID'][j]
+            df_master['port_to_code'][i] = df_ports['Code'][j]
+            
+        elif df_master['port_from'][i] == df_ports['Port Name'][j]:
+            df_master['port_from_id'][i] = df_ports['ID'][j]
+            df_master['port_from_code'][i] = df_ports['Code'][j]
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+# Concatenate the columns with a hyphen and append trip_type
+df_master['url'] = df_master['port_from_code'] + '-' + df_master['port_to_code'] + '-' + df_master['trip_type']
+
+# If you want to convert the trip_type to lower case
+df_master['url'] = df_master['url'].str.lower()
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+df_offer_temp = df_master[['port_from_id','port_to_id','trip_type','url','publish_date','expir_date']]
+df_offer_temp
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+df_offer_temp.to_excel('offer_temp.xlsx',index= False)
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+df_master['extracted_numbers'] = df_master['Price'].apply(lambda x: int(re.findall(r'\d+', x)[0]) if re.findall(r'\d+', x) else None)
+df_master['extracted_numbers'] = df_master['extracted_numbers'].fillna(0)
+df_master['extracted_numbers']
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+def transform_price(price):
+    arabic_digits = {'0': '۰', '1': '۱', '2': '۲', '3': '۳', '4': '٤', '5': '۵', '6': '٦', '7': '۷', '8': '۸', '9': '۹'}
+    arabic_number = ''.join(arabic_digits[digit] for digit in str(price) if digit.isdigit())
+    return {"en": str(price), "ar": arabic_number, "gr": str(price), "it": str(price), "cz": str(price), "fr": str(price), "sk": str(price)}
+
+# Apply the transformation to the 'Price' column
+df_master['transformed_price'] = df_master['extracted_numbers'].apply(lambda x: transform_price(x))
+
+df_master
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+df_offer_content = df_master[['url','sheet_name','transformed_price']]
+df_offer_content
+
+df_offer_content.to_excel('offer_content.xlsx',index= False)
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------
